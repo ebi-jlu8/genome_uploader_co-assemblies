@@ -11,6 +11,9 @@ import xml.etree.ElementTree as ET
 import xml.dom.minidom as minidom
 import requests
 
+##Script is currently in the writing stage and NOT TO BE used by the public.
+#Script to annotate output manifests generated from genomes_uploader.py to allow upload of MAGs generated from co-assemblies of multiple runs
+
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
 metagenomes = ["activated carbon metagenome", "activated sludge metagenome", 
@@ -201,6 +204,7 @@ def parse_args(argv):
     return args
 
 '''
+#input metadata table
 Input table: expects the following parameters:
     genome_name: genome file name
     accessions: run(s) or assembly(ies) the genome was generated from
@@ -279,7 +283,7 @@ def read_and_cleanse_metadata_tsv(inputFile, genomeType):
     except:
         raise ValueError("Completeness, contamination or coverage values should be formatted as floats")
 
-    # check whether all co-assemblies have more than one run associated and viceversa
+    # check whether all co-assemblies have more than one run associated and vice versa
     coassemblyDiscrepancy = metadata[(
         (accessionComparison["correct"] < 2) & (accessionComparison["co-assembly"])) |
         ((accessionComparison["correct"] > 1) & (~accessionComparison["co-assembly"])
@@ -313,6 +317,7 @@ def read_and_cleanse_metadata_tsv(inputFile, genomeType):
         raise IndexError("Duplicate genome names were found in the input table.")
 
 def round_stats(stats):
+    #converts stats to floats. If 100, c
     newStat = round(float(stats), 2)
     if newStat == 100.0:
         newStat = 100
@@ -322,6 +327,7 @@ def round_stats(stats):
     return newStat
 
 def compute_MAG_quality(completeness, contamination, RNApresence):
+    # computes the MAG quality (completeness, contamination, and RNA presence) according to the MIMAG criteria
     RNApresent = False
     if str(RNApresence).lower() in ["true", "yes", "y"]:
         RNApresent = True
@@ -335,6 +341,7 @@ def compute_MAG_quality(completeness, contamination, RNApresence):
     return quality, completeness, contamination
 
 def extract_tax_info(taxInfo):
+    # returns tax_info (tax_id, and scientific name from NCBI_lineage input)
     kingdoms = ["Archaea", "Bacteria", "Eukaryota"]
     kingdomTaxa = ["2157", "2", "2759"]
     lineage, position, digitAnnotation = taxInfo.split(';'), 0, False
@@ -417,6 +424,7 @@ def query_scientific_name(scientificName, searchRank=False):
         return submittable, taxid
 
 def extract_Eukaryota_info(name, rank):
+    # checks name and rank of eukaryota info (if final kingdom == 'Eukaryota')
     nonSubmittable = (False, "", 0)
 
     # Asterisks in given taxonomy suggest the classification might be not confident enough.
@@ -446,6 +454,7 @@ def extract_Eukaryota_info(name, rank):
                     return nonSubmittable
 
 def extract_Bacteria_info(name, rank):
+    # checks name and rank of bacteria  info (if final kingdom == 'Bacteria')
     if rank == "species":
         name = name
     elif rank == "superkingdom":
@@ -467,6 +476,7 @@ def extract_Bacteria_info(name, rank):
     return submittable, name, taxid
 
 def extract_Archaea_info(name, rank):
+    # checks name and rank of Archaea infor (if final kingdome == 'Archaea')
     if rank == "species":
         name = name
     elif rank == "superkingdom":
@@ -495,6 +505,7 @@ def extract_Archaea_info(name, rank):
     return submittable, name, taxid
 
 def extract_genomes_info(inputFile, genomeType):
+    # main function to take an input metadata file and read into dictionary (based on genomeTye (either bin, mags))
     genomeInfo = read_and_cleanse_metadata_tsv(inputFile, genomeType)
     for gen in genomeInfo:
         genomeInfo[gen]["accessions"] = genomeInfo[gen]["accessions"].split(',')
@@ -591,6 +602,7 @@ def get_run(run_accession, webin, password, attempt=0, search_params=None):
     return run
 
 def get_run_from_assembly(assembly_name):
+    #get all runs associated with assembly name
     manifestXml = minidom.parseString(requests.get("https://www.ebi.ac.uk" +
         "/ena/browser/api/xml/" + assembly_name).text)
 
@@ -698,7 +710,8 @@ def get_sample(sample_accession, webin, password, fields=None, search_params=Non
 
 # -------------------------------------------------------
 
-def extract_ENA_info(genomeInfo, uploadDir, webin, password):
+def extract_ENA_info(genomeInfo, uploadDir, webin, password, genomeType):
+    # main function for getting processing genomeInfo (dict) and return manifests into uploadDir.
     print('\tRetrieving project and run info from ENA (this might take a while)...')
     
     # retrieving metadata from runs (and runs from assembly accessions if provided)
@@ -789,14 +802,48 @@ def extract_ENA_info(genomeInfo, uploadDir, webin, password):
                             file.truncate()
     
     tempDict = {**tempDict, **backupDict}
-    combine_ENA_info(genomeInfo, tempDict)
+    combine_ENA_info(genomeInfo, tempDict, genomeType)
 
 def multipleElementSet(metadataList):
+    #check for multiple unique elements in list
     return len(set(metadataList))>1
 
-def combine_ENA_info(genomeInfo, ENADict):
+
+def multi_study_description(studyList, runList):
+    #assigns runs to its project and creates a string for adding to description
+    # create dict of study_runs
+    study_runs_Dict = {}  # eg {'ERP008710': ['ERR675312', 'ERR675313', 'ERR675314'], 'ERP001950': ['ERR192253']}
+    for run, study in zip(runList, studyList):
+        if study in study_runs_Dict:
+            study_runs_Dict[study].append(run)
+        else:
+            study_runs_Dict[study] = [run]
+
+    studyList2 = []
+    # create runs_study list for description
+    for study in study_runs_Dict:
+        # ERPXXXX (run1, run2, run3)
+        runs = "".join([study, " (", ",".join(study_runs_Dict[study]), ")"])
+        #runs = "".join([study, ":", ",".join(study_runs_Dict[study])])
+
+        studyList2.append(runs)
+
+    #e.g. # ERPXXXX (run1, run2, run3); # ERPXXXX (run1, run2, run3)
+    studyList2 = "; ".join(studyList2)
+
+    return studyList2
+
+def combine_ENA_info(genomeInfo, ENADict, genomeType):
+
+    if genomeType == "MAGs":
+        checklist, assemblyType = "ERC000047", "Metagenome-assembled genome"
+    elif genomeType == "bins":
+        checklist, assemblyType = "ERC000050", "binned metagenome"
+
+    #combines information from genome_Info and ENA_Dict
     for g in genomeInfo:
         # TODO: optimise all the part below
+        # 1st check - if genome (MAG/bin) was generated from co-assembly, co-assembly == TRUE
         if genomeInfo[g]["co-assembly"]:
             instrumentList, collectionList, countryList = [], [], []
             studyList, descriptionList, samplesList = [], [], []
@@ -810,44 +857,71 @@ def combine_ENA_info(genomeInfo, ENADict):
                 samplesList.append(ENADict[run]["sampleAccession"])
                 longList.append(ENADict[run]["longitude"])
                 latitList.append(ENADict[run]["latitude"])
-            
+
+            #print ("RUNS:", genomeInfo[g]["accessions"])
+            #print ("STUDIES:", studyList)
+            #print ("SAMPLES LIST:", samplesList)
+
+            #MAIN check if co-assemblies are from different studies.
             if multipleElementSet(studyList):
-                print("The co-assembly your MAG has been generated from comes from " +
-                "different studies.")
-                sys.exit(1)
-            genomeInfo[g]["study"] = studyList[0] 
-            genomeInfo[g]["description"] = descriptionList[0]
-            
-            instrument = instrumentList[0]
-            if multipleElementSet(instrumentList):
-                instrument = ','.join(instrumentList)
+                #if [MAG] genome generate from co-assemblies from runs from multiple studies, generate warning.
+                num_runs = str(len(set(studyList)))
+
+                # genomeInfo[g]["accessions"] ->['ERR675312', 'ERR675313', 'ERR675314', 'ERR192253']
+                # studyList -> ['ERP008710', 'ERP008710', 'ERP008710', 'ERP001950']
+                # samplesList -> SAMPLES LIST: ['SAMEA3134360', 'SAMEA3134361', 'SAMEA3134362', 'SAMEA2039682']
+
+                #create dict of study_runs
+#                study_runs_Dict = {} #eg {'ERP008710': ['ERR675312', 'ERR675313', 'ERR675314'], 'ERP001950': ['ERR192253']}
+#                for run, study in zip(genomeInfo[g]["accessions"], studyList):
+#                    if study in study_runs_Dict:
+#                        study_runs_Dict[study].append(run)
+#                    else:
+#                        study_runs_Dict[study] = [run]
+
+#                studyList2 = []
+                #create runs_study list for description
+#                for study in study_runs_Dict:
+                    #ERPXXXX: run1, run2, run3
+#                    runs = study, ":" + ",".join(study_runs_Dict[study])
+#                    studyList2.append(runs)
+
+#                studyList2 = ";".join(studyList2)
+
+                studyList2 = multi_study_description(studyList, genomeInfo[g]["accessions"])
+
+                #studyList2 = multi_study_description(studyList, genomeInfo[g]["accessions"])
+
+                print ("CAUTION: The co-assembly your {} {} was generated from. was co-assembled from {} different studies.".format(assemblyType, g, str(len(set(studyList)))) +
+                       "Please ensure your genomes have been checked for cross-contamination and chimerism prior to submission to ENA")
+                #sys.exit(1)
+                genomeInfo[g]["study"] = ','.join(studyList)
+                #description to be written to samples.xml
+                genomeInfo[g]["description"] = "This sample represents a {} assembled from runs of multiple projects: {}.".format(assemblyType, studyList2)
+
+
+            else: #[MAG] genome generated from co-assemblies from runs of a single study
+                genomeInfo[g]["study"] = studyList[0]
+                genomeInfo[g]["description"] = descriptionList[0] #use original description from sample
+
+                print ("testing", descriptionList[0])
+
+            # fields for all co-assemblies (regardless of number studies)
+            instrument = ','.join(instrumentList) if multipleElementSet(instrumentList) else instrumentList[0] # get instrument and/or instruments
+            collectionDate = "not provided" if multipleElementSet(collectionList) else collectionList[0] # get collection Date from collection list
+            country = "not applicable" if multipleElementSet(countryList) else countryList[0]
+            latitude = "not provided" if multipleElementSet(latitList) else latitList[0]
+            longitude = "not provided" if multipleElementSet(longList) else longList[0]
+            samples = ','.join(samplesList) if multipleElementSet(samplesList) else samplesList[0] #get all samples if from multiple samples
+
             genomeInfo[g]["sequencingMethod"] = instrument
-
-            collectionDate = collectionList[0]
-            if multipleElementSet(collectionList):
-                collectionDate = "not provided"
             genomeInfo[g]["collectionDate"] = collectionDate
-
-            country = countryList[0]
-            if multipleElementSet(countryList):
-                country = "not applicable"
             genomeInfo[g]["country"] = country
-
-            latitude = latitList[0]
-            if multipleElementSet(latitList):
-                latitude = "not provided"
             genomeInfo[g]["latitude"] = latitude
-
-            longitude = longList[0]
-            if multipleElementSet(longList):
-                longitude = "not provided"
             genomeInfo[g]["longitude"] = longitude
-
-            samples = samplesList[0]
-            if multipleElementSet(samplesList):
-                samples = ','.join(samplesList)
             genomeInfo[g]["sample_accessions"] = samples
-        else:
+
+        else:  # 2) if the genome isn't from a  coassembly - co-assembly == FALSE
             run = genomeInfo[g]["accessions"][0]
             genomeInfo[g]["sequencingMethod"] = ENADict[run]["instrumentModel"]
             genomeInfo[g]["collectionDate"] = ENADict[run]["collectionDate"]
@@ -858,7 +932,7 @@ def combine_ENA_info(genomeInfo, ENADict):
             genomeInfo[g]["longitude"] = ENADict[run]["longitude"]
             genomeInfo[g]["latitude"] = ENADict[run]["latitude"]
         
-        genomeInfo[g]["accessions"] = ','.join(genomeInfo[g]["accessions"])
+        genomeInfo[g]["accessions"] = ','.join(genomeInfo[g]["accessions"]) #joins all accessions into a single string.
 
 def handle_genomes_registration(sample_xml, submission_xml, webin, password, live=False):
     liveSub, mode = "", "live"
@@ -942,6 +1016,7 @@ def create_manifest_dictionary(run, alias, assemblySoftware, sequencingMethod,
     return manifestDict
 
 def compute_manifests(genomes):
+    #takes an input of genome fields from genomes dict into manifestInfo Dict
     manifestInfo = {}
     for g in genomes:
         manifestInfo[g] = create_manifest_dictionary(genomes[g]["accessions"],
@@ -1015,6 +1090,7 @@ def recover_info_from_xml(genomeDict, sample_xml, live_mode):
             f.write(dom_string)
 
 def create_sample_attribute(sample_attributes, data_list, mag_data=None):
+    #given s list of sample attributes, get
     tag = data_list[0]
     value = data_list[1]
     if mag_data:
@@ -1053,10 +1129,11 @@ def write_genomes_xml(genomes, xml_path, genomeType, centreName, tpa):
         ["metagenomic source", "metagenome"],
     ]
 
-    checklist, assemblyType = "ERC000047", "Metagenome-assembled genome"
-    if genomeType == "bins":
-        checklist = "ERC000050"
-        assemblyType = "binned metagenome"
+    #assign checklist and assemblyType depending on genomeType selected (MAGs, bins)
+    if genomeType == "MAGs":
+        checklist, assemblyType = "ERC000047", "Metagenome-assembled genome"
+    elif genomeType == "bins":
+        checklist, assemblyType = "ERC000050", "binned metagenome"
 
     constant_sample_attributes = [
         # tag - value
@@ -1065,26 +1142,55 @@ def write_genomes_xml(genomes, xml_path, genomeType, centreName, tpa):
         ["ENA-CHECKLIST", checklist],
     ]
 
-    tpaDescription = ""
-    if tpa:
-        tpaDescription = "Third Party Annotation (TPA) "
+    #assign as tpa if tpa flag used
+    tpaDescription = "Third Party Annotation (TPA) " if tpa else ""
 
     sample_set = ET.Element("SAMPLE_SET")
 
     for g in genomes:
-        plural = ""
+        ##NOTE: Changed script here to generate description for multi- and single- project co-assembled MAGs
         if genomes[g]["co-assembly"]:
-            plural = 's'
-        description = ("This sample represents a {}{} assembled from the "
-            "metagenomic run{} {} of study {}.".format(tpaDescription, 
-            assemblyType, plural, genomes[g]["accessions"], 
-            genomes[g]["study"]))
+            #assign studies here - len(runs)==len(studies)
+            runList = genomes[g]["accessions"]
+            studyList = genomes[g]["study"]
+
+            #if co-assembly for multiple studies
+            if len(set(genomes[g]["study"])) >1:
+                multiStudy_string = multi_study_description(studyList, runList)
+
+                description = "This sample represents a {} {} assembled from metagenomic runs of multiple projects: {}.".format(tpaDescription, assemblyType, multiStudy_string)
+            else:
+                #co-assembly from single study
+                description = "This sample represents a {} {} assembled from the metagenomic runs {} of study {}.".format(tpaDescription, assemblyType, genomes[g]["accessions"], genomes[g]["study"])
+
+        else:
+            description = ("This sample represents a {}{} assembled from the "
+                           "metagenomic run {} of study {}.".format(tpaDescription,
+                                                                      assemblyType, genomes[g]["accessions"],
+                                                                      genomes[g]["study"]))
+
+
+            #check if multiple studies
+            print ("runs_test", genomes[g]["accessions"], len(genomes[g]["accessions"]))
+            print ("studies_test", genomes[g]["study"], len(genomes[g]["study"]))
+
+        #'''
+#        plural = ""
+#        if genomes[g]["co-assembly"]:
+#            plural = 's'
+#        description = ("This sample represents a {}{} assembled from the "
+#            "metagenomic run{} {} of study {}.".format(tpaDescription,
+#            assemblyType, plural, genomes[g]["accessions"],
+#            genomes[g]["study"]))
+        #'''
+
+
         
         sample = ET.SubElement(sample_set, "SAMPLE")
         sample.set("alias", genomes[g]["alias"])
         sample.set("center_name", centreName)
 
-        ET.SubElement(sample, 'TITLE').text = ("{}: {}".format(assemblyType, 
+        ET.SubElement(sample, 'TITLE').text = ("{}: {}".format(assemblyType,
             genomes[g]["alias"]))
         sample_name = ET.SubElement(sample, "SAMPLE_NAME")
         ET.SubElement(sample_name, "TAXON_ID").text = genomes[g]["taxID"]
@@ -1138,12 +1244,30 @@ def generate_genome_manifest(genomeInfo, study, manifestsRoot, aliasToSample, ge
     
     tpaAddition, multipleRuns = "", ""
     if tpa:
-        tpaAddition = "Third Party Annotation (TPA) "
+        tpaAddition = "Third Party Annotation (TPA)"
     if genomeInfo["co-assembly"]:
         multipleRuns = "s"
     assemblyType = "Metagenome-Assembled Genome (MAG)"
     if genomeType == "bins":
         assemblyType = "binned metagenome"
+
+    #generate discription for DESCRIPTION FIELD here.
+    #description will differ based on how if the genome was assembled from TPA/non-TPA, single runs, co-assemblies (single, multiple studies)
+    studies = genomeInfo["study"]
+    runs = genomeInfo["accessions"]
+    coAssembly=genomeInfo["co-assembly"]
+
+    description = ("This is a {}bin derived from the primary whole genome "
+            "shotgun (WGS) data set {}. This sample represents a {} from the "
+            "metagenomic run{} {}.".format(tpaAddition, genomeInfo["study"],
+            assemblyType, multipleRuns, genomeInfo["accessions"]))
+    if coAssembly == True:
+        if len(set(studies)) > 1:
+            pass
+        else:
+            pass
+
+
 
     values = (
         ('STUDY', study),
@@ -1154,10 +1278,7 @@ def generate_genome_manifest(genomeInfo, study, manifestsRoot, aliasToSample, ge
         ('PROGRAM', genomeInfo["assembler"]),
         ('PLATFORM', genomeInfo["sequencingMethod"]),
         ('MOLECULETYPE', "genomic DNA"),
-        ('DESCRIPTION', ("This is a {}bin derived from the primary whole genome "
-            "shotgun (WGS) data set {}. This sample represents a {} from the "
-            "metagenomic run{} {}.".format(tpaAddition, genomeInfo["study"], 
-            assemblyType, multipleRuns, genomeInfo["accessions"]))),
+        ('DESCRIPTION', description),
         ('RUN_REF', genomeInfo["accessions"]),
         ('FASTA', os.path.abspath(genomeInfo["genome_path"]))
     )
@@ -1264,7 +1385,7 @@ class GenomeUpload:
 
         genomeInfo = extract_genomes_info(self.genomeMetadata, self.genomeType)
         if not os.path.exists(samples_xml) or self.force:
-            extract_ENA_info(genomeInfo, self.upload_dir, self.username, self.password)
+            extract_ENA_info(genomeInfo, self.upload_dir, self.username, self.password, self.genomeType)
         else:
             recover_info_from_xml(genomeInfo, samples_xml, self.live)
 
