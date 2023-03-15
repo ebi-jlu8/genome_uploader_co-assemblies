@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 import os
 import sys
 import logging
@@ -560,6 +561,7 @@ def get_default_params():
     }
 
 def post_request(data, webin, password):
+    #api search for data
     url = "https://www.ebi.ac.uk/ena/portal/api/search"
     auth = (webin, password)
     default_connection_headers = {
@@ -567,7 +569,7 @@ def post_request(data, webin, password):
         "Accept": "*/*"
     }
     response = requests.post(url, data=data, auth=auth, headers=default_connection_headers)
-    
+
     return response
 
 def get_run(run_accession, webin, password, attempt=0, search_params=None):
@@ -579,13 +581,23 @@ def get_run(run_accession, webin, password, attempt=0, search_params=None):
     if search_params:
         data.update(search_params)
 
+    #function to do api pull using data
     response = post_request(data, webin, password)
-    
-    if str(response.status_code)[0] != '2' and attempt > 2:
+    print (response.text, response.status_code) #for debugging
+
+
+    if str(response.status_code)[0] != '2' and attempt > 3:
         raise ValueError("Could not retrieve run with accession {}, returned "
             "message: {}".format(run_accession, response.text))
+    elif response.status_code == 401: #account for 401 error
+        if attempt < 3:
+            attempt +=1
+            sleep(1)
+            return get_run(run_accession, webin, password, attempt)
+
+
     elif response.status_code == 204:
-        if attempt < 2:
+        if attempt < 3:
             attempt += 1
             sleep(1)
             return get_run(run_accession, webin, password, attempt)
@@ -597,8 +609,7 @@ def get_run(run_accession, webin, password, attempt=0, search_params=None):
     except (IndexError, TypeError, ValueError):
         raise ValueError("Could not find run {} in ENA.".format(run_accession))
     except:
-        raise Exception("Could not query ENA API: {}".format(response.text))
-
+        raise Exception("Could not query ENA API: {}".format(response.text['message']), run)
     return run
 
 def get_run_from_assembly(assembly_name):
@@ -698,8 +709,14 @@ def get_sample(sample_accession, webin, password, fields=None, search_params=Non
         if str(response.status_code)[0] != '2':
             raise ValueError("Could not retrieve sample with accession {}. "
                 "Returned message: {}".format(sample_accession, response.text))
+        elif response.status_code == 401:  # account for 401 error
+            if attempt < 3:
+                attempt += 1
+                sleep(1)
+                return get_sample(sample_accession, webin, password, fields=fields,
+                                  search_params=new_params, attempt=attempt)
         elif response.status_code == 204:
-            if attempt < 2:
+            if attempt < 3:
                 new_params = {'dataPortal': 'metagenome' if data['dataPortal'] == 'ena' else 'ena'}
                 attempt += 1
                 return get_sample(sample_accession, webin, password, fields=fields, 
@@ -717,6 +734,7 @@ def extract_ENA_info(genomeInfo, uploadDir, webin, password, genomeType):
     # retrieving metadata from runs (and runs from assembly accessions if provided)
     allRuns = []
     for g in genomeInfo:
+        # print ("Processing {} ".format(g))
         if genomeInfo[g]["accessionType"] == "assembly":
             derivedRuns = []
             for acc in genomeInfo[g]["accessions"]:
@@ -724,11 +742,17 @@ def extract_ENA_info(genomeInfo, uploadDir, webin, password, genomeType):
             genomeInfo[g]["accessions"] = derivedRuns
         allRuns.extend(genomeInfo[g]["accessions"])
 
+    counter = 5
+
     runsSet, studySet, samplesDict, tempDict = set(allRuns), set(), {}, {}
-    for r in runsSet:
+    for i, r in enumerate(runsSet):
         run_info = get_run(r, webin, password)
         studySet.add(run_info["secondary_study_accession"])
         samplesDict[r] = run_info["sample_accession"]
+        print (i, r)
+
+        #sleep after every 5 runs proceessed
+        sleep(1)
     
     if not studySet:
         raise ValueError("No study corresponding to runs found.")
@@ -824,7 +848,6 @@ def multi_study_description(studyList, runList):
     for study in study_runs_Dict:
         # ERPXXXX (run1, run2, run3)
         runs = "".join([study, " (", ",".join(study_runs_Dict[study]), ")"])
-        #runs = "".join([study, ":", ",".join(study_runs_Dict[study])])
 
         studyList2.append(runs)
 
@@ -858,41 +881,18 @@ def combine_ENA_info(genomeInfo, ENADict, genomeType):
                 longList.append(ENADict[run]["longitude"])
                 latitList.append(ENADict[run]["latitude"])
 
-            #print ("RUNS:", genomeInfo[g]["accessions"])
-            #print ("STUDIES:", studyList)
-            #print ("SAMPLES LIST:", samplesList)
 
             #MAIN check if co-assemblies are from different studies.
             if multipleElementSet(studyList):
                 #if [MAG] genome generate from co-assemblies from runs from multiple studies, generate warning.
                 num_runs = str(len(set(studyList)))
 
-                # genomeInfo[g]["accessions"] ->['ERR675312', 'ERR675313', 'ERR675314', 'ERR192253']
-                # studyList -> ['ERP008710', 'ERP008710', 'ERP008710', 'ERP001950']
-                # samplesList -> SAMPLES LIST: ['SAMEA3134360', 'SAMEA3134361', 'SAMEA3134362', 'SAMEA2039682']
 
-                #create dict of study_runs
-#                study_runs_Dict = {} #eg {'ERP008710': ['ERR675312', 'ERR675313', 'ERR675314'], 'ERP001950': ['ERR192253']}
-#                for run, study in zip(genomeInfo[g]["accessions"], studyList):
-#                    if study in study_runs_Dict:
-#                        study_runs_Dict[study].append(run)
-#                    else:
-#                        study_runs_Dict[study] = [run]
-
-#                studyList2 = []
-                #create runs_study list for description
-#                for study in study_runs_Dict:
-                    #ERPXXXX: run1, run2, run3
-#                    runs = study, ":" + ",".join(study_runs_Dict[study])
-#                    studyList2.append(runs)
-
-#                studyList2 = ";".join(studyList2)
 
                 studyList2 = multi_study_description(studyList, genomeInfo[g]["accessions"])
 
-                #studyList2 = multi_study_description(studyList, genomeInfo[g]["accessions"])
 
-                print ("CAUTION: The co-assembly your {} {} was generated from. was co-assembled from {} different studies.".format(assemblyType, g, str(len(set(studyList)))) +
+                print ("CAUTION: The co-assembly your {} {} was generated from was co-assembled from {} different studies. ".format(assemblyType, g, str(len(set(studyList)))) +
                        "Please ensure your genomes have been checked for cross-contamination and chimerism prior to submission to ENA")
                 #sys.exit(1)
                 genomeInfo[g]["study"] = ','.join(studyList)
@@ -904,7 +904,7 @@ def combine_ENA_info(genomeInfo, ENADict, genomeType):
                 genomeInfo[g]["study"] = studyList[0]
                 genomeInfo[g]["description"] = descriptionList[0] #use original description from sample
 
-                print ("testing", descriptionList[0])
+
 
             # fields for all co-assemblies (regardless of number studies)
             instrument = ','.join(instrumentList) if multipleElementSet(instrumentList) else instrumentList[0] # get instrument and/or instruments
@@ -1151,11 +1151,12 @@ def write_genomes_xml(genomes, xml_path, genomeType, centreName, tpa):
         ##NOTE: Changed script here to generate description for multi- and single- project co-assembled MAGs
         if genomes[g]["co-assembly"]:
             #assign studies here - len(runs)==len(studies)
-            runList = genomes[g]["accessions"]
-            studyList = genomes[g]["study"]
+            runList = genomes[g]["accessions"].split(",")
+            studyList = genomes[g]["study"].split(",")
 
             #if co-assembly for multiple studies
-            if len(set(genomes[g]["study"])) >1:
+            if len(set(studyList)) >1:
+
                 multiStudy_string = multi_study_description(studyList, runList)
 
                 description = "This sample represents a {} {} assembled from metagenomic runs of multiple projects: {}.".format(tpaDescription, assemblyType, multiStudy_string)
@@ -1170,22 +1171,7 @@ def write_genomes_xml(genomes, xml_path, genomeType, centreName, tpa):
                                                                       genomes[g]["study"]))
 
 
-            #check if multiple studies
-            print ("runs_test", genomes[g]["accessions"], len(genomes[g]["accessions"]))
-            print ("studies_test", genomes[g]["study"], len(genomes[g]["study"]))
 
-        #'''
-#        plural = ""
-#        if genomes[g]["co-assembly"]:
-#            plural = 's'
-#        description = ("This sample represents a {}{} assembled from the "
-#            "metagenomic run{} {} of study {}.".format(tpaDescription,
-#            assemblyType, plural, genomes[g]["accessions"],
-#            genomes[g]["study"]))
-        #'''
-
-
-        
         sample = ET.SubElement(sample_set, "SAMPLE")
         sample.set("alias", genomes[g]["alias"])
         sample.set("center_name", centreName)
@@ -1257,15 +1243,33 @@ def generate_genome_manifest(genomeInfo, study, manifestsRoot, aliasToSample, ge
     runs = genomeInfo["accessions"]
     coAssembly=genomeInfo["co-assembly"]
 
-    description = ("This is a {}bin derived from the primary whole genome "
+    #description for MAG from single run
+    description = ("This is a {} bin derived from the primary whole genome "
             "shotgun (WGS) data set {}. This sample represents a {} from the "
-            "metagenomic run{} {}.".format(tpaAddition, genomeInfo["study"],
-            assemblyType, multipleRuns, genomeInfo["accessions"]))
+            "metagenomic run {}.".format(tpaAddition, genomeInfo["study"],
+            assemblyType, genomeInfo["accessions"]))
+
+
     if coAssembly == True:
         if len(set(studies)) > 1:
-            pass
+            studyList = genomeInfo["study"].split(",")
+            runList = genomeInfo["accessions"].split(",")
+            #match runs to proj for writing into description
+            multiStudy_string = multi_study_description(studyList, runList)
+
+
+            #description for MAG from coassemblies assembled from multiple projects.
+            description = ("This is a {} bin derived from the primary whole genome shotgun (WGS) of multiple "
+                           "data sets {}. This sample represents a {} from the metagenomic runs of "
+                           "associated projects: {}. ".format(tpaAddition, genomeInfo["study"],
+            assemblyType, multiStudy_string))
+
         else:
-            pass
+            #description for MAG from coassemblies assembled from a SINGLE project
+            description = ("This is a {} bin derived from the primary whole genome "
+            "shotgun (WGS) data set {}. This sample represents a {} from the "
+            "metagenomic runs {}.".format(tpaAddition, genomeInfo["study"],
+            assemblyType, genomeInfo["accessions"]))
 
 
 
